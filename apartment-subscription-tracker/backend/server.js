@@ -32,6 +32,131 @@ app.get("/", (req, res) => {
 //   }
 // });
 
+app.get("/api/apartments", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM APARTMENTS");
+    res.json(result.rows);
+  } catch (error) {
+    console.log("Error fetching apartments:", error);
+    res.status(500).json({
+      error: "Failed to fetch apartments",
+    });
+  }
+});
+
+app.get("/api/apartments/:id/subscriptions", async (req, res) => {
+  try {
+    const apartmentId = req.params.id;
+    const result = await pool.query(
+      `SELECT 
+      subscriptions.id,
+      apartments.unit_number,
+      publications.name,
+      publications.type,
+      publications.price_monthly
+      FROM subscriptions
+      JOIN apartments
+        ON subscriptions.apartment_id = apartments.id
+      JOIN publications
+        ON subscriptions.publication_id = publications.id
+      WHERE apartments.id = $1
+      AND subscriptions.active = TRUE;`,
+      [apartmentId],
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.log("Error fetching subscriptions", error);
+    res.status(500).json({
+      error: "Failed to fetch subscriptions",
+    });
+  }
+});
+
+app.get("/api/apartments/:id/bill", async (req, res) => {
+  try {
+    const apartmentId = req.params.id;
+    const result = await pool.query(
+      `
+    SELECT
+      apartments.unit_number,
+      SUM(publications.price_monthly) AS total_monthly_bill
+    FROM subscriptions
+    JOIN apartments
+      ON subscriptions.apartment_id = apartments.id
+    JOIN publications
+      ON subscriptions.publication_id = publications.id
+    WHERE apartments.id = $1
+    AND subscriptions.active = TRUE
+    GROUP BY apartments.unit_number;`,
+      [apartmentId],
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Error fetching bill", error);
+    res.status(500).json({
+      error: "Failed to fetch bill",
+    });
+  }
+});
+
+app.patch("/api/subscriptions/:id/cancel", async (req, res) => {
+  try {
+    const subscriptionId = req.params.id;
+    const result = await pool.query(
+      `
+      UPDATE subscriptions
+      SET 
+        active = FALSE,
+        end_date = CURRENT_DATE
+      WHERE id = $1
+      RETURNING *`,
+      [subscriptionId],
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: "Subscription not found",
+      });
+    }
+    res.json({
+      message: "Subscription cancelled successfully",
+      subscription: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Error cancelling subscription:", error);
+    res.status(500).json({
+      error: "Failed to cancel subscription",
+    });
+  }
+});
+
+app.post("/api/subscriptions", async (req, res) => {
+  try {
+    const { apartment_id, publication_id, start_date } = req.body;
+    const result = await pool.query(
+      ` 
+    INSERT INTO subscriptions (
+      apartment_id,
+      publication_id,
+      start_date,
+      active)
+      VALUES ($1, $2, $3, TRUE)
+      RETURNING *;`,
+      [apartment_id, publication_id, start_date],
+    );
+
+    res.status(201).json({
+      message: "Subscription created successfully",
+      subscription: result.rows[0],
+    });
+  } catch (error) {
+    console.log("Error creating subscription", error);
+    res.status(500).json({
+      error: "Failed to create subscription",
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
