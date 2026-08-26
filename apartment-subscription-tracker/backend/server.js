@@ -157,6 +157,70 @@ app.post("/api/subscriptions", async (req, res) => {
   }
 });
 
+app.get("/api/publications", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM publications
+      ORDER BY id; `);
+    res.json(result.rows);
+  } catch (error) {
+    console.log("Error fetching publications", error);
+    res.status(500).json({
+      error: "Failed to fetch publications",
+    });
+  }
+});
+
+app.post("/api/publications", async (req, res) => {
+  try {
+    const { name, type, price_monthly } = req.body;
+    const result = await pool.query(
+      `
+      INSERT INTO publications (
+      name,
+      type,
+      price_monthly
+      ) 
+      VALUES ($1, $2, $3)
+      RETURNING *;`,
+      [name, type, price_monthly],
+    );
+
+    res.status(201).json({
+      message: "Publication added successfully",
+      publication: result.rows[0],
+    });
+  } catch (error) {
+    console.log("Error adding publication", error);
+    res.status(500).json({
+      error: "Failed to add publication",
+    });
+  }
+});
+
+app.patch("/api/publications/:id", async (req, res) => {
+  try {
+    const publicationId = req.params.id;
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: "Publication not found",
+      });
+    }
+
+    res.json({
+      message: "Publication updated successfully",
+      publication: result.rows[0],
+    });
+  } catch (error) {
+    console.log("Error updating publication", error);
+    res.status(500).json({
+      error: "Failed to update publication",
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
