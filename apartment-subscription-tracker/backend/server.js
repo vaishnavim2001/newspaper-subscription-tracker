@@ -221,6 +221,66 @@ app.patch("/api/publications/:id", async (req, res) => {
   }
 });
 
+app.post("/api/apartments", async (req, res) => {
+  try {
+    const { unit_number, floor } = req.body;
+
+    const result = await pool.query(
+      `
+      INSERT INTO apartments (
+      unit_number,
+      floor)
+      VALUES ($1, $2)
+      RETURNING *;
+      `,
+      [unit_number, floor],
+    );
+    res.status(201).json({
+      message: "Apartment added successfully",
+      apartment: result.rows[0],
+    });
+  } catch (error) {
+    console.log("Error creating apartment", error);
+    res.status(500).json({
+      error: "Failed to create apartment",
+    });
+  }
+});
+
+app.patch("/api/apartments/:id", async (req, res) => {
+  try {
+    const apartmentId = req.params.id;
+    const { unit_number, floor } = req.body;
+
+    const result = await pool.query(
+      `
+      UPDATE apartments
+      SET 
+        unit_number = $1,
+        floor = $2 
+      WHERE id = $3
+      RETURNING *;
+      `,
+      [unit_number, floor, apartmentId],
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: "Apartment not found",
+      });
+    }
+
+    res.json({
+      message: "Apartment updated successfully",
+      apartment: result.rows[0],
+    });
+  } catch (error) {
+    console.log("Error updating apartment", error);
+    res.status(500).json({
+      error: "Failed to update apartment",
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
