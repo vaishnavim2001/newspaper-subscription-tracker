@@ -4,6 +4,7 @@ require("dotenv").config();
 
 const { Pool } = require("pg");
 const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
 
 const app = express();
 const PORT = 5000;
@@ -19,19 +20,76 @@ const pool = new Pool({
 app.use(cors());
 app.use(express.json());
 
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({
+      error: "Access token required",
+    });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (error, user) => {
+    if (error) {
+      return res.status(403).json({
+        error: "Invalid or expired access token",
+      });
+    }
+
+    req.user = user;
+    next();
+  });
+}
+
+function authorizeRoles(...allowedRoles) {
+  return (req, res, next) => {
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({
+        error: "Access denied",
+      });
+    }
+
+    next();
+  };
+}
+
+app.get("/api/auth/me", authenticateToken, (req, res) => {
+  res.json({
+    message: "Token is valid",
+    user: req.user,
+  });
+});
+
+app.get(
+  "/api/admin/test",
+  authenticateToken,
+  authorizeRoles("admin"),
+  (req, res) => {
+    res.json({
+      message: "You have admin access",
+      user: req.user,
+    });
+  },
+);
+
+app.get(
+  "/api/resident/test",
+  authenticateToken,
+  authorizeRoles("resident"),
+  (req, res) => {
+    res.json({
+      message: "You have resident access",
+      user: req.user,
+    });
+  },
+);
+
 app.get("/", (req, res) => {
   res.json({
     message: "Apartment subscription API is running!",
   });
 });
-
-// pool.query("SELECT NOW()", (error, result) => {
-//   if (error) {
-//     console.error("Database connection failed:", error);
-//   } else {
-//     console.log("Database connected:", result.rows[0]);
-//   }
-// });
 
 app.get("/api/apartments", async (req, res) => {
   try {
@@ -41,6 +99,61 @@ app.get("/api/apartments", async (req, res) => {
     console.log("Error fetching apartments:", error);
     res.status(500).json({
       error: "Failed to fetch apartments",
+    });
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM users
+      WHERE email = $1`,
+      [email],
+    );
+    if (result.rows.length === 0) {
+      return res.status(401).json({
+        error: "Invalid email or password",
+      });
+    }
+    const user = result.rows[0];
+
+    const passwordMatch = await bcrypt.compare(password, user.password_hash);
+
+    if (!passwordMatch) {
+      return res.status(401).json({
+        error: "Invalid email or password",
+      });
+    }
+
+    const token = jwt.sign(
+      {
+        userId: user.id,
+        role: user.role,
+        apartmentId: user.apartment_id,
+      },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: "15m",
+      },
+    );
+
+    res.json({
+      message: "Login successful",
+      accessToken: token,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        apartment_id: user.apartment_id,
+      },
+    });
+  } catch (error) {
+    console.log("Error logging in:", error);
+    res.status(500).json({
+      error: "Failed to login",
     });
   }
 });
