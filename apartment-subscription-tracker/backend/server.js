@@ -5,6 +5,8 @@ require("dotenv").config();
 const { Pool } = require("pg");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const { createClient } = require("redis");
+const crypto = require("crypto");
 
 const app = express();
 const PORT = 5000;
@@ -15,6 +17,13 @@ const pool = new Pool({
   database: process.env.DB_NAME,
   password: process.env.DB_PASSWORD,
   port: process.env.DB_PORT,
+});
+const redisClient = createClient({
+  url: process.env.REDIS_URL,
+});
+
+redisClient.on("error", (error) => {
+  console.log("Redis Client Error: ", error);
 });
 
 app.use(cors());
@@ -70,41 +79,26 @@ function authorizeApartment(req, res, next) {
   return res.status(403).json({ error: "Access denied" });
 }
 
-app.get("/api/auth/me", authenticateToken, (req, res) => {
-  res.json({
-    message: "Token is valid",
-    user: req.user,
-  });
-});
-
-app.get(
-  "/api/admin/test",
-  authenticateToken,
-  authorizeRoles("admin"),
-  (req, res) => {
-    res.json({
-      message: "You have admin access",
-      user: req.user,
-    });
-  },
-);
-
-app.get(
-  "/api/resident/test",
-  authenticateToken,
-  authorizeRoles("resident"),
-  (req, res) => {
-    res.json({
-      message: "You have resident access",
-      user: req.user,
-    });
-  },
-);
-
 app.get("/", (req, res) => {
   res.json({
     message: "Apartment subscription API is running!",
   });
+});
+
+app.get("/api/redis-test", async (req, res) => {
+  try {
+    await redisClient.set("test_key", "Hello from Redis!");
+    const value = await redisClient.get("test_key");
+    res.json({
+      message: "Redis is working!",
+      value: value,
+    });
+  } catch (error) {
+    console.log("Redis test error:", error);
+    res.status(500).json({
+      error: "Redis test failed",
+    });
+  }
 });
 
 app.get(
@@ -161,9 +155,114 @@ app.post("/api/auth/login", async (req, res) => {
       },
     );
 
+    const refreshToken = crypto.randomBytes(64).toString("hex");
+    const refreshTokenHash = crypto
+      .createHash("sha256")
+      .update(refreshToken)
+      .digest("hex");
+
+    await redisClient.set(`refresh:${refreshTokenHash}`, String(user.id), {
+      EX: 7 * 24 * 60 * 60,
+    });
+
+    app.post("/api/auth/refresh", async (req, res) => {
+      try {
+        const { refreshToken } = req.body;
+
+        if (!refreshToken) {
+          return res.status(401).json({
+            error: "Refresh token required",
+          });
+        }
+
+        const refreshTokenHash = crypto
+          .createHash("sha256")
+          .update(refreshToken)
+          .digest("hex");
+
+        const userId = await redisClient.get(`refresh:${refreshTokenHash}`);
+
+        if (!userId) {
+          return res.status(403).json({
+            error: "Invalid or expired refresh token",
+          });
+        }
+
+        const result = await pool.query(
+          `
+      SELECT id, email, role, apartment_id
+      FROM users
+      WHERE id = $1
+      `,
+          [userId],
+        );
+
+        if (result.rows.length === 0) {
+          return res.status(403).json({
+            error: "User not found",
+          });
+        }
+
+        const user = result.rows[0];
+
+        const accessToken = jwt.sign(
+          {
+            userId: user.id,
+            role: user.role,
+            apartmentId: user.apartment_id,
+          },
+          process.env.JWT_SECRET,
+          {
+            expiresIn: "15m",
+          },
+        );
+
+        res.json({
+          message: "Access token refreshed",
+          accessToken: accessToken,
+        });
+      } catch (error) {
+        console.log("Error refreshing token:", error);
+
+        res.status(500).json({
+          error: "Failed to refresh token",
+        });
+      }
+    });
+
+    app.post("/api/auth/logout", async (req, res) => {
+      try {
+        const { refreshToken } = req.body;
+
+        if (!refreshToken) {
+          return res.status(401).json({
+            error: "Refresh token required",
+          });
+        }
+
+        const refreshTokenHash = crypto
+          .createHash("sha256")
+          .update(refreshToken)
+          .digest("hex");
+
+        await redisClient.del(`refresh:${refreshTokenHash}`);
+
+        res.json({
+          message: "Logout successful",
+        });
+      } catch (error) {
+        console.log("Error logging out:", error);
+
+        res.status(500).json({
+          error: "Failed to logout",
+        });
+      }
+    });
+
     res.json({
       message: "Login successful",
       accessToken: token,
+      refreshToken: refreshToken,
       user: {
         id: user.id,
         email: user.email,
@@ -252,9 +351,9 @@ app.patch(
     try {
       const subscriptionId = Number(req.params.id);
       const subscriptionResult = await pool.query(
-        `SELECT apartment_id
+        `SELECT apartment_id, active
          FROM subscriptions
-         WHERE id = $1
+         WHERE id = $1 
         `,
         [subscriptionId],
       );
@@ -262,6 +361,12 @@ app.patch(
       if (subscriptionResult.rows.length === 0) {
         return res.status(404).json({
           error: "Subscription not found",
+        });
+      }
+
+      if (!subscriptionResult.rows[0].active) {
+        return res.status(400).json({
+          error: "Subscription already cancelled",
         });
       }
 
@@ -281,15 +386,11 @@ app.patch(
       SET 
         active = FALSE,
         end_date = CURRENT_DATE
-      WHERE id = $1
+      WHERE id = $1 AND active = TRUE
       RETURNING *`,
         [subscriptionId],
       );
-      if (result.rows.length === 0) {
-        return res.status(404).json({
-          error: "Subscription not found",
-        });
-      }
+
       res.json({
         message: "Subscription cancelled successfully",
         subscription: result.rows[0],
@@ -307,6 +408,12 @@ app.post("/api/subscriptions", authenticateToken, async (req, res) => {
   try {
     const { apartment_id, publication_id, start_date } = req.body;
 
+    if (!apartment_id || !publication_id || !start_date) {
+      return res.status(400).json({
+        error: "Apartment, publication and start date are required",
+      });
+    }
+
     if (
       req.user.role === "resident" &&
       req.user.apartmentId !== Number(apartment_id)
@@ -315,6 +422,7 @@ app.post("/api/subscriptions", authenticateToken, async (req, res) => {
         error: "You can only create subscriptions for your own apartment",
       });
     }
+
     const result = await pool.query(
       ` 
     INSERT INTO subscriptions (
@@ -499,7 +607,15 @@ app.patch(
 // Registration endpoint
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { email, password, role, apartment_id } = req.body;
+    const { email, password, apartment_id } = req.body;
+
+    if (!email || !password || !apartment_id) {
+      return res.status(400).json({
+        error: "Email, password and apartment required",
+      });
+    }
+
+    const role = "resident";
 
     const existingUser = await pool.query(
       `
@@ -568,6 +684,16 @@ app.get(
   },
 );
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+async function startServer() {
+  try {
+    await redisClient.connect();
+
+    app.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.log("Failed to start server:", error);
+  }
+}
+
+startServer();
