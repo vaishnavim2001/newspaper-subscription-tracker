@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import api from "./services/api";
+import Login from "./pages/Login";
+import { useAuth } from "./context/useAuth.js";
 
-function App() {
+function Home() {
+  const { user, logout } = useAuth();
   const [publications, setPublications] = useState([]);
   const [error, setError] = useState("");
 
@@ -13,20 +17,35 @@ function App() {
       })
       .catch((error) => {
         console.error("API error:", error);
-        setError("Could not load publications");
+        setError("Could not load publications.");
       });
   }, []);
 
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
+  };
+
   return (
-    <div>
+    <main>
       <h1>Apartment Subscription Tracker</h1>
 
-      {error && <p>{error}</p>}
+      {user && (
+        <>
+          <p>Logged in as {user.email}</p>
+          <button onClick={handleLogout}>Log out</button>
+        </>
+      )}
+
+      {error && <p role="alert">{error}</p>}
 
       <h2>Publications</h2>
 
       {publications.length === 0 ? (
-        <p>No publications found.</p>
+        !error && <p>No publications found.</p>
       ) : (
         <ul>
           {publications.map((publication) => (
@@ -34,7 +53,26 @@ function App() {
           ))}
         </ul>
       )}
-    </div>
+    </main>
+  );
+}
+
+function App() {
+  const { user } = useAuth();
+
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route
+          path="/login"
+          element={user ? <Navigate to="/" replace /> : <Login />}
+        />
+        <Route
+          path="/"
+          element={user ? <Home /> : <Navigate to="/login" replace />}
+        />
+      </Routes>
+    </BrowserRouter>
   );
 }
 

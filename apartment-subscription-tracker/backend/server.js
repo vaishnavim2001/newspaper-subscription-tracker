@@ -121,18 +121,20 @@ app.get(
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body;
+
     const result = await pool.query(
-      `
-      SELECT *
-      FROM users
-      WHERE email = $1`,
+      `SELECT *
+       FROM users
+       WHERE email = $1`,
       [email],
     );
+
     if (result.rows.length === 0) {
       return res.status(401).json({
         error: "Invalid email or password",
       });
     }
+
     const user = result.rows[0];
 
     const passwordMatch = await bcrypt.compare(password, user.password_hash);
@@ -143,19 +145,18 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    const token = jwt.sign(
+    const accessToken = jwt.sign(
       {
         userId: user.id,
         role: user.role,
         apartmentId: user.apartment_id,
       },
       process.env.JWT_SECRET,
-      {
-        expiresIn: "15m",
-      },
+      { expiresIn: "15m" },
     );
 
     const refreshToken = crypto.randomBytes(64).toString("hex");
+
     const refreshTokenHash = crypto
       .createHash("sha256")
       .update(refreshToken)
@@ -165,104 +166,10 @@ app.post("/api/auth/login", async (req, res) => {
       EX: 7 * 24 * 60 * 60,
     });
 
-    app.post("/api/auth/refresh", async (req, res) => {
-      try {
-        const { refreshToken } = req.body;
-
-        if (!refreshToken) {
-          return res.status(401).json({
-            error: "Refresh token required",
-          });
-        }
-
-        const refreshTokenHash = crypto
-          .createHash("sha256")
-          .update(refreshToken)
-          .digest("hex");
-
-        const userId = await redisClient.get(`refresh:${refreshTokenHash}`);
-
-        if (!userId) {
-          return res.status(403).json({
-            error: "Invalid or expired refresh token",
-          });
-        }
-
-        const result = await pool.query(
-          `
-      SELECT id, email, role, apartment_id
-      FROM users
-      WHERE id = $1
-      `,
-          [userId],
-        );
-
-        if (result.rows.length === 0) {
-          return res.status(403).json({
-            error: "User not found",
-          });
-        }
-
-        const user = result.rows[0];
-
-        const accessToken = jwt.sign(
-          {
-            userId: user.id,
-            role: user.role,
-            apartmentId: user.apartment_id,
-          },
-          process.env.JWT_SECRET,
-          {
-            expiresIn: "15m",
-          },
-        );
-
-        res.json({
-          message: "Access token refreshed",
-          accessToken: accessToken,
-        });
-      } catch (error) {
-        console.log("Error refreshing token:", error);
-
-        res.status(500).json({
-          error: "Failed to refresh token",
-        });
-      }
-    });
-
-    app.post("/api/auth/logout", async (req, res) => {
-      try {
-        const { refreshToken } = req.body;
-
-        if (!refreshToken) {
-          return res.status(401).json({
-            error: "Refresh token required",
-          });
-        }
-
-        const refreshTokenHash = crypto
-          .createHash("sha256")
-          .update(refreshToken)
-          .digest("hex");
-
-        await redisClient.del(`refresh:${refreshTokenHash}`);
-
-        res.json({
-          message: "Logout successful",
-        });
-      } catch (error) {
-        console.log("Error logging out:", error);
-
-        res.status(500).json({
-          error: "Failed to logout",
-        });
-      }
-    });
-
     res.json({
       message: "Login successful",
-      accessToken: token,
-      refreshToken: refreshToken,
+      accessToken,
+      refreshToken,
       user: {
         id: user.id,
         email: user.email,
@@ -274,6 +181,94 @@ app.post("/api/auth/login", async (req, res) => {
     console.log("Error logging in:", error);
     res.status(500).json({
       error: "Failed to login",
+    });
+  }
+});
+
+app.post("/api/auth/refresh", async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(401).json({
+        error: "Refresh token required",
+      });
+    }
+
+    const refreshTokenHash = crypto
+      .createHash("sha256")
+      .update(refreshToken)
+      .digest("hex");
+
+    const userId = await redisClient.get(`refresh:${refreshTokenHash}`);
+
+    if (!userId) {
+      return res.status(403).json({
+        error: "Invalid or expired refresh token",
+      });
+    }
+
+    const result = await pool.query(
+      `SELECT id, email, role, apartment_id
+       FROM users
+       WHERE id = $1`,
+      [userId],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(403).json({
+        error: "User not found",
+      });
+    }
+
+    const user = result.rows[0];
+
+    const accessToken = jwt.sign(
+      {
+        userId: user.id,
+        role: user.role,
+        apartmentId: user.apartment_id,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "15m" },
+    );
+
+    res.json({
+      message: "Access token refreshed",
+      accessToken,
+    });
+  } catch (error) {
+    console.log("Error refreshing token:", error);
+    res.status(500).json({
+      error: "Failed to refresh token",
+    });
+  }
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(401).json({
+        error: "Refresh token required",
+      });
+    }
+
+    const refreshTokenHash = crypto
+      .createHash("sha256")
+      .update(refreshToken)
+      .digest("hex");
+
+    await redisClient.del(`refresh:${refreshTokenHash}`);
+
+    res.json({
+      message: "Logout successful",
+    });
+  } catch (error) {
+    console.log("Error logging out:", error);
+    res.status(500).json({
+      error: "Failed to logout",
     });
   }
 });
